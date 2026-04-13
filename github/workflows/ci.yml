@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  lint:
+    name: Lint (ruff + mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install ruff mypy
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy apps/ config/ --ignore-missing-imports
+
+  test:
+    name: Test (pytest)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB:       shipyard_test
+          POSTGRES_USER:     shipyard
+          POSTGRES_PASSWORD: shipyard
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+        ports: ["5432:5432"]
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+        ports: ["6379:6379"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install -r requirements/development.txt
+      - name: Run tests
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.testing
+          DATABASE_URL: postgres://shipyard:shipyard@localhost:5432/shipyard_test
+          REDIS_URL:    redis://localhost:6379/0
+          SECRET_KEY:   ci-test-secret-key-not-for-production
+        run: |
+          pytest --cov=apps --cov-report=xml --cov-report=term-missing -v
+      - uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
