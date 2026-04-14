@@ -1,9 +1,29 @@
-class StripeClient:
-    """
-    Thin wrapper providing:
-    - create_checkout_session(team, plan, interval) → Session
-    - create_customer_portal_session(team) → Session
-    - create_or_get_customer(team) → Customer
-    - cancel_subscription(subscription) → None
-    - sync_subscription_from_stripe(stripe_sub_id) → Subscription
-    """
+import stripe
+from django.conf import settings
+
+stripe.api_key = getattr(settings, "STRIPE_SECRET_KEY", "")
+
+
+def create_customer(email: str, name: str = "") -> stripe.Customer:
+    return stripe.Customer.create(email=email, name=name)
+
+
+def create_checkout_session(customer_id: str, price_id: str, success_url: str, cancel_url: str) -> stripe.checkout.Session:
+    return stripe.checkout.Session.create(
+        customer=customer_id,
+        payment_method_types=["card"],
+        line_items=[{"price": price_id, "quantity": 1}],
+        mode="subscription",
+        success_url=success_url,
+        cancel_url=cancel_url,
+    )
+
+
+def cancel_subscription(subscription_id: str) -> stripe.Subscription:
+    return stripe.Subscription.modify(subscription_id, cancel_at_period_end=True)
+
+
+def construct_webhook_event(payload: bytes, sig_header: str) -> stripe.Event:
+    return stripe.Webhook.construct_event(
+        payload, sig_header, settings.STRIPE_WEBHOOK_SECRET
+    )

@@ -1,17 +1,52 @@
-WEBHOOK_HANDLERS: dict[str, Callable] = {
-    "checkout.session.completed":          handle_checkout_completed,
-    "customer.subscription.created":       handle_subscription_created,
-    "customer.subscription.updated":       handle_subscription_updated,
-    "customer.subscription.deleted":       handle_subscription_deleted,
-    "invoice.payment_succeeded":           handle_invoice_paid,
-    "invoice.payment_failed":              handle_invoice_payment_failed,
-    "customer.subscription.trial_will_end": handle_trial_ending,
+import logging
+
+from django.http import HttpResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
+
+from .models import Subscription, WebhookEvent
+from .stripe_client import construct_webhook_event
+
+logger = logging.getLogger(__name__)
+
+HANDLED_EVENTS = {
+    "customer.subscription.updated",
+    "customer.subscription.deleted",
+    "invoice.payment_succeeded",
+    "invoice.payment_failed",
 }
 
-def process_webhook(event: stripe.Event) -> None:
-    """
-    Entry point from WebhookView.
-    1. Check WebhookEvent for idempotency (skip if already processed).
-    2. Dispatch to the appropriate handler.
-    3. Mark event as processed or log the error.
-    """
+
+@csrf_exempt
+@require_POST
+def stripe_webhook(request):
+    sig_header = request.META.get("HTTP_STRIPE_SIGNATURE", "")
+    try:
+        event = construct_webhook_event(request.body, sig_header)
+    except Exception as e:
+        logger.warning("Webhook signature verification failed: %s", e)
+        return HttpResponse(status=400)
+
+    WebhookEvent.objects.get_or_create(
+        stripe_event_id=event["id"],
+        defaults={"event_type": event["type"], "payload": event},
+    )
+
+    if event["type"] == "customer.subscription.updated":
+        _handle_subscription_updated(event["data"]["object"])
+    elif event["type"] == "customer.subscription.deleted":
+        _handle_subscription_deleted(event["data"]["object"])
+
+    return HttpResponse(status=200)
+
+
+def _handle_subscription_updated(subscription_data: dict) -> None:
+    Subscription.objects.filter(
+        stripe_subscription_id=subscription_data["id"]
+    ).update(status=subscription_data["status"])
+
+
+def _handle_subscription_deleted(subscription_data: dict) -> None:
+    Subscription.objects.filter(
+        stripe_subscription_id=subscription_data["id"]
+    ).update(status="canceled")
